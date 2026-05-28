@@ -518,9 +518,18 @@ function Ledger({data,update,addActivity,role}){
   const saveP=()=>{
     if(!pf.name) return;
     const p={id:uid(),name:pf.name,phone:pf.phone||""};
-    if(lTab==="workers") update({workers:[...workers,{...p,role:pf.role||"Tailor",rate:+(pf.rate||0),active:true}]});
-    else{const key={clients:"clients",suppliers:"suppliers",loans:"lenders"}[lTab];update({[key]:[...(data[key]||[]),p]});}
-    addActivity(`Added ${cfg.label.slice(0,-1)}: ${pf.name}`);setAModal(false);setPf({});
+    let nW=[...workers],nC=[...clients],nS=[...suppliers],nL=[...lenders],nE=[...ledgerEntries];
+    if(lTab==="workers") nW=[...workers,{...p,role:pf.role||"Tailor",rate:+(pf.rate||0),active:true}];
+    else if(lTab==="clients") nC=[...clients,p];
+    else if(lTab==="suppliers") nS=[...suppliers,p];
+    else nL=[...lenders,p];
+    if(pf.openingBal&&+pf.openingBal>0){
+      const dir=lTab==="clients"||lTab==="loans"?"in":"out";
+      nE=[...nE,{id:uid(),type:cfg.type,partyId:p.id,partyName:p.name,desc:"Opening balance",amount:+(pf.openingBal),direction:dir,date:pf.obDate||todayStr()}];
+    }
+    update({workers:nW,clients:nC,suppliers:nS,lenders:nL,ledgerEntries:nE});
+    addActivity(`Added ${cfg.label.slice(0,-1)}: ${pf.name}${pf.openingBal?" (opening: "+fmtCur(pf.openingBal)+")":""}`);
+    setAModal(false);setPf({});
   };
   return(<>
     <div className="pg-head"><div><div className="pg-title">Ledger</div><div className="pg-sub">Accounts & balances</div></div>{canEdit&&<button className="btn btn-sm btn-navy" onClick={()=>setAModal(true)}>+ Add</button>}</div>
@@ -563,6 +572,14 @@ function Ledger({data,update,addActivity,role}){
       <div className="field"><label className="lbl">Name</label><input className="inp" placeholder="Full name or business name" value={pf.name||""} onChange={e=>setPf(f=>({...f,name:e.target.value}))}/></div>
       <div className="field"><label className="lbl">Phone (optional)</label><input className="inp" type="tel" placeholder="9800000000" value={pf.phone||""} onChange={e=>setPf(f=>({...f,phone:e.target.value}))}/></div>
       {lTab==="workers"&&<><div className="field"><label className="lbl">Role</label><select className="inp" value={pf.role||"Tailor"} onChange={e=>setPf(f=>({...f,role:e.target.value}))}>{ALL_ROLES.map(r=><option key={r} value={r}>{r}</option>)}</select></div><div className="field"><label className="lbl">Rate/piece (₹)</label><input className="inp" type="number" placeholder="0" value={pf.rate||""} onChange={e=>setPf(f=>({...f,rate:e.target.value}))}/></div></>}
+      <div className="field" style={{borderTop:"1.5px dashed #DDE3EF",paddingTop:12,marginTop:4}}>
+        <label className="lbl" style={{color:"#C8962A"}}>Opening Balance (optional)</label>
+        <input className="inp" type="number" placeholder="Enter if they already have a balance" value={pf.openingBal||""} onChange={e=>setPf(f=>({...f,openingBal:e.target.value}))}/>
+        {pf.openingBal&&+pf.openingBal>0&&<div style={{fontSize:12,color:"#6B7A99",marginTop:5}}>
+          {lTab==="clients"?"Means client already owes you this amount":lTab==="loans"?"Means this loan was already received":"Means you already owe them this amount"}
+        </div>}
+      </div>
+      {pf.openingBal&&+pf.openingBal>0&&<div className="field"><label className="lbl">Opening Balance Date</label><input className="inp" type="date" value={pf.obDate||todayStr()} onChange={e=>setPf(f=>({...f,obDate:e.target.value}))}/></div>}
       <div style={{display:"flex",gap:8,marginTop:4}}><button className="btn btn-sm btn-ghost" style={{flex:1}} onClick={()=>setAModal(false)}>Cancel</button><button className="btn btn-sm btn-navy" style={{flex:2}} onClick={saveP}>Add {cfg.label.slice(0,-1)}</button></div>
     </div></div>)}
   </>);
