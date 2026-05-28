@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-// ─── Storage (localStorage for standalone deployment) ─────────────────────────
+// ─── Storage ──────────────────────────────────────────────────────────────────
+// Data is ALWAYS saved to localStorage immediately (so reload never loses data)
+// Google Sheets is synced in the background as a backup + multi-device share
 const local = {
   get: async (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
   set: async (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -242,21 +244,41 @@ export default function SuiDhaga() {
   useEffect(()=>{
     if(!scriptUrl||!role) return;
     (async()=>{
+      // 1. Load from localStorage first so app works instantly
+      const localData = await local.get("sd_data_v1");
+      if(localData) setData(localData);
+
+      // 2. Try to sync from Google Sheets in background
       setSync("syncing");
-      const res=await gsheet.read(scriptUrl);
-      setData(res.ok?(res.data||{...EMPTY}):{...EMPTY});
-      setSync(res.ok?"ok":"error");
+      const res = await gsheet.read(scriptUrl);
+      if(res.ok && res.data){
+        // Use sheets data only if it has more entries than local (sheets is master)
+        const sheetEntries = (res.data.ledgerEntries||[]).length + (res.data.pieceLog||[]).length + (res.data.orders||[]).length;
+        const localEntries = localData ? (localData.ledgerEntries||[]).length + (localData.pieceLog||[]).length + (localData.orders||[]).length : 0;
+        if(sheetEntries >= localEntries){
+          setData(res.data);
+          await local.set("sd_data_v1", res.data);
+        }
+        setSync("ok");
+      } else {
+        if(!localData) setData({...EMPTY});
+        setSync(res.ok?"ok":"error");
+      }
     })();
   },[scriptUrl,role]);
 
   useEffect(()=>{
-    if(!data||!scriptUrl||role!=="manager") return;
+    if(!data||!role) return;
+    // Always save to localStorage immediately (survives reload)
+    local.set("sd_data_v1", data);
+    // Also sync to Google Sheets if manager
+    if(!scriptUrl||role!=="manager") return;
     clearTimeout(timer.current);
     setSync("syncing");
     timer.current=setTimeout(async()=>{
       const res=await gsheet.write(scriptUrl,data);
       setSync(res.ok?"ok":"error");
-    },1500);
+    },2000);
   },[data]);
 
   const saveUrl=async(url)=>{ await local.set("sd_cfg_v1",{scriptUrl:url}); setScriptUrl(url); };
