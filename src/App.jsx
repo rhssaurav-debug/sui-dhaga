@@ -8,35 +8,24 @@ const local = {
   set: async (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
-// ─── Google Sheets API (JSONP to bypass CORS) ─────────────────────────────────
+// ─── Google Sheets API (via Vercel proxy — no CORS issues) ───────────────────
 const gsheet = {
-  call(url, params = {}) {
-    return new Promise((resolve) => {
-      const cbName = "_sd_" + Date.now();
-      const qs = Object.entries({ ...params, callback: cbName })
-        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(typeof v === "object" ? JSON.stringify(v) : v)}`)
-        .join("&");
-      const script = document.createElement("script");
-      const timer = setTimeout(() => {
-        delete window[cbName];
-        try { document.body.removeChild(script); } catch {}
-        resolve({ ok: false, error: "Timeout — check URL" });
-      }, 10000);
-      window[cbName] = (data) => {
-        clearTimeout(timer);
-        delete window[cbName];
-        try { document.body.removeChild(script); } catch {}
-        resolve(data);
-      };
-      script.src = `${url}?${qs}`;
-      script.onerror = () => { clearTimeout(timer); delete window[cbName]; resolve({ ok: false, error: "Load failed" }); };
-      document.body.appendChild(script);
-    });
+  async call(scriptUrl, action, extras = {}) {
+    try {
+      const res = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scriptUrl, action, ...extras }),
+      });
+      return await res.json();
+    } catch (e) {
+      return { ok: false, error: e.toString() };
+    }
   },
-  ping:      (url)       => gsheet.call(url, { action: "ping" }),
-  verifyPin: (url, pin)  => gsheet.call(url, { action: "verifyPin", pin }),
-  read:      (url)       => gsheet.call(url, { action: "read" }),
-  write:     (url, data) => gsheet.call(url, { action: "write", data }),
+  ping:      (url)       => gsheet.call(url, "ping"),
+  verifyPin: (url, pin)  => gsheet.call(url, "verifyPin", { pin }),
+  read:      (url)       => gsheet.call(url, "read"),
+  write:     (url, data) => gsheet.call(url, "write", { data: typeof data === "object" ? JSON.stringify(data) : data }),
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
