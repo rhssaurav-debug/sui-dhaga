@@ -1,31 +1,70 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-// ─── Storage ──────────────────────────────────────────────────────────────────
-// Data is ALWAYS saved to localStorage immediately (so reload never loses data)
-// Google Sheets is synced in the background as a backup + multi-device share
-const local = {
-  get: async (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
-  set: async (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+// ─── Supabase Config ──────────────────────────────────────────────────────────
+const SUPABASE_URL = "https://zkicjwlshsofdcjyqeus.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpraWNqd2xzaHNvZmRjanlxZXVzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk5NDg0NTcsImV4cCI6MjA5NTUyNDQ1N30.Yy7S1vCQ_cwylIaxvx_CEia4kpaVDfS4_DQmMPtrlUI";
+const ROW_ID = 1;
+
+const db = {
+  async read() {
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/appdata?id=eq.${ROW_ID}&select=value`, {
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
+      const rows = await res.json();
+      if (rows && rows.length > 0 && rows[0].value) return JSON.parse(rows[0].value);
+      return null;
+    } catch(e) { return null; }
+  },
+  async write(data) {
+    try {
+      const body = JSON.stringify({ id: ROW_ID, value: JSON.stringify(data) });
+      // Try update first
+      const upd = await fetch(`${SUPABASE_URL}/rest/v1/appdata?id=eq.${ROW_ID}`, {
+        method: "PATCH",
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body
+      });
+      if (upd.status === 404 || upd.status === 406) {
+        // Row doesn't exist yet — insert
+        await fetch(`${SUPABASE_URL}/rest/v1/appdata`, {
+          method: "POST",
+          headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body
+        });
+      }
+      return true;
+    } catch(e) { return false; }
+  },
+  async verifyPin(pin) {
+    // Pins stored in DB config row id=2
+    try {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/appdata?id=eq.2&select=value`, {
+        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+      });
+      const rows = await res.json();
+      if (rows && rows.length > 0) {
+        const cfg = JSON.parse(rows[0].value);
+        if (pin === cfg.managerPin) return { ok: true, role: "manager" };
+        if (pin === cfg.viewerPin)  return { ok: true, role: "viewer" };
+        return { ok: false };
+      }
+      // Default pins if not set
+      if (pin === "1234") return { ok: true, role: "manager" };
+      if (pin === "0000") return { ok: true, role: "viewer" };
+      return { ok: false };
+    } catch(e) {
+      if (pin === "1234") return { ok: true, role: "manager" };
+      if (pin === "0000") return { ok: true, role: "viewer" };
+      return { ok: false };
+    }
+  }
 };
 
-// ─── Google Sheets API (via Vercel proxy — no CORS issues) ───────────────────
-const gsheet = {
-  async call(scriptUrl, action, extras = {}) {
-    try {
-      const res = await fetch("/api/sheets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scriptUrl, action, ...extras }),
-      });
-      return await res.json();
-    } catch (e) {
-      return { ok: false, error: e.toString() };
-    }
-  },
-  ping:      (url)       => gsheet.call(url, "ping"),
-  verifyPin: (url, pin)  => gsheet.call(url, "verifyPin", { pin }),
-  read:      (url)       => gsheet.call(url, "read"),
-  write:     (url, data) => gsheet.call(url, "write", { data: typeof data === "object" ? JSON.stringify(data) : data }),
+// ─── Local storage (instant load, backup) ────────────────────────────────────
+const local = {
+  get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 5);
@@ -135,7 +174,7 @@ select.inp{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns
 .pin-err{color:#ff6b6b;font-size:13px;margin-top:12px;font-weight:600;}
 `;
 
-function LionsLogo({ size = 34 }) {
+function LionsLogo({ size=34 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
       <circle cx="50" cy="42" r="30" fill="#1B3A8C"/>
@@ -159,44 +198,18 @@ function Loader({ msg="Loading…" }) {
   );
 }
 
-function SetupScreen({ onSave }) {
-  const [url,setUrl]=useState("");
-  const [st,setSt]=useState("idle");
-  const test=async()=>{
-    if(!url.trim()) return;
-    setSt("testing");
-    const res=await gsheet.ping(url.trim());
-    setSt(res.ok?"ok":"err");
-    if(res.ok) setTimeout(()=>onSave(url.trim()),700);
-  };
-  return(
-    <div style={{minHeight:"100vh",background:C.navy,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"32px 24px"}}>
-      <div style={{width:64,height:64,background:"white",borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",marginBottom:16}}><LionsLogo size={48}/></div>
-      <div style={{fontFamily:"'Playfair Display',serif",fontSize:24,fontWeight:900,color:"white",marginBottom:6}}>Sui Dhaga</div>
-      <div style={{fontSize:13,color:"rgba(255,255,255,.55)",marginBottom:32,textAlign:"center",lineHeight:1.6}}>Paste your Google Apps Script URL below.</div>
-      <div style={{width:"100%",maxWidth:400}}>
-        <div style={{fontSize:11,color:"rgba(255,255,255,.6)",fontWeight:700,letterSpacing:.5,marginBottom:6,textTransform:"uppercase"}}>Apps Script Web App URL</div>
-        <input style={{width:"100%",padding:"12px 14px",borderRadius:10,border:"1.5px solid rgba(255,255,255,.2)",background:"rgba(255,255,255,.1)",color:"white",fontFamily:"'Source Sans 3',sans-serif",fontSize:13,outline:"none",marginBottom:12}} placeholder="https://script.google.com/macros/s/..." value={url} onChange={e=>{setUrl(e.target.value);setSt("idle");}}/>
-        <button style={{width:"100%",padding:"13px",background:C.gold,color:"white",border:"none",borderRadius:10,fontFamily:"'Source Sans 3',sans-serif",fontSize:15,fontWeight:700,cursor:"pointer"}} onClick={test}>{st==="testing"?"Testing…":"Connect & Continue"}</button>
-        {st==="ok"&&<div style={{color:"#4CAF50",fontSize:13,fontWeight:600,marginTop:10,textAlign:"center"}}>✅ Connected! Loading…</div>}
-        {st==="err"&&<div style={{color:"#ff6b6b",fontSize:13,fontWeight:600,marginTop:10,textAlign:"center"}}>❌ Could not connect. Check the URL.</div>}
-      </div>
-    </div>
-  );
-}
-
-function PinScreen({ scriptUrl, onSuccess }) {
+function PinScreen({ onSuccess }) {
   const [pin,setPin]=useState("");
   const [err,setErr]=useState("");
   const [busy,setBusy]=useState(false);
   const press=async(v)=>{
     if(v==="del"){setPin(p=>p.slice(0,-1));setErr("");return;}
-    const next=pin+v;setPin(next);setErr("");
+    const next=pin+v; setPin(next); setErr("");
     if(next.length===4){
       setBusy(true);
-      const res=await gsheet.verifyPin(scriptUrl,next);
+      const res=await db.verifyPin(next);
       if(res.ok) onSuccess(res.role);
-      else{setErr("Wrong PIN. Try again.");setPin("");}
+      else { setErr("Wrong PIN. Try again."); setPin(""); }
       setBusy(false);
     }
   };
@@ -218,66 +231,48 @@ function PinScreen({ scriptUrl, onSuccess }) {
 }
 
 export default function SuiDhaga() {
-  const [scriptUrl,setScriptUrl]=useState(null);
-  const [role,setRole]=useState(null);
-  const [tab,setTab]=useState("dash");
-  const [data,setData]=useState(null);
-  const [sync,setSync]=useState("idle");
-  const [loading,setLoading]=useState(true);
-  const timer=useRef(null);
+  const [role,setRole]         = useState(null);
+  const [tab,setTab]           = useState("dash");
+  const [data,setData]         = useState(null);
+  const [sync,setSync]         = useState("idle");
+  const [loading,setLoading]   = useState(true);
+  const timer                  = useRef(null);
 
+  // On mount: load from localStorage instantly, then fetch from Supabase
   useEffect(()=>{
-    (async()=>{ const s=await local.get("sd_cfg_v1"); if(s?.scriptUrl) setScriptUrl(s.scriptUrl); setLoading(false); })();
+    (async()=>{
+      const cached = local.get("sd_data_v2");
+      if(cached){ setData(cached); setLoading(false); }
+      const remote = await db.read();
+      if(remote){
+        setData(remote);
+        local.set("sd_data_v2", remote);
+      } else if(!cached){
+        setData({...EMPTY});
+      }
+      setLoading(false);
+    })();
   },[]);
 
+  // Save: always to localStorage immediately, debounce to Supabase
   useEffect(()=>{
-    if(!scriptUrl||!role) return;
-    (async()=>{
-      // 1. Load from localStorage first so app works instantly
-      const localData = await local.get("sd_data_v1");
-      if(localData) setData(localData);
-
-      // 2. Try to sync from Google Sheets in background
-      setSync("syncing");
-      const res = await gsheet.read(scriptUrl);
-      if(res.ok && res.data){
-        // Use sheets data only if it has more entries than local (sheets is master)
-        const sheetEntries = (res.data.ledgerEntries||[]).length + (res.data.pieceLog||[]).length + (res.data.orders||[]).length;
-        const localEntries = localData ? (localData.ledgerEntries||[]).length + (localData.pieceLog||[]).length + (localData.orders||[]).length : 0;
-        if(sheetEntries >= localEntries){
-          setData(res.data);
-          await local.set("sd_data_v1", res.data);
-        }
-        setSync("ok");
-      } else {
-        if(!localData) setData({...EMPTY});
-        setSync(res.ok?"ok":"error");
-      }
-    })();
-  },[scriptUrl,role]);
-
-  useEffect(()=>{
-    if(!data||!role) return;
-    // Always save to localStorage immediately (survives reload)
-    local.set("sd_data_v1", data);
-    // Also sync to Google Sheets if manager
-    if(!scriptUrl||role!=="manager") return;
+    if(!data) return;
+    local.set("sd_data_v2", data);
+    if(!role||role!=="manager") return;
     clearTimeout(timer.current);
     setSync("syncing");
     timer.current=setTimeout(async()=>{
-      const res=await gsheet.write(scriptUrl,data);
-      setSync(res.ok?"ok":"error");
-    },2000);
+      const ok = await db.write(data);
+      setSync(ok?"ok":"error");
+    },1500);
   },[data]);
 
-  const saveUrl=async(url)=>{ await local.set("sd_cfg_v1",{scriptUrl:url}); setScriptUrl(url); };
-  const update=useCallback((patch)=>{ if(role==="viewer") return; setData(d=>({...d,...patch})); },[role]);
-  const addAct=useCallback((txt)=>{ if(role==="viewer") return; setData(d=>({...d,activity:[{id:uid(),txt,date:todayStr()},...(d.activity||[])].slice(0,50)})); },[role]);
+  const update  = useCallback((patch)=>{ if(role==="viewer") return; setData(d=>({...d,...patch})); },[role]);
+  const addAct  = useCallback((txt)=>{ if(role==="viewer") return; setData(d=>({...d,activity:[{id:uid(),txt,date:todayStr()},...(d.activity||[])].slice(0,50)})); },[role]);
 
-  if(loading) return <><style>{CSS}</style><Loader/></>;
-  if(!scriptUrl) return <><style>{CSS}</style><SetupScreen onSave={saveUrl}/></>;
-  if(!role) return <><style>{CSS}</style><PinScreen scriptUrl={scriptUrl} onSuccess={setRole}/></>;
-  if(!data) return <><style>{CSS}</style><Loader msg="Loading data…"/></>;
+  if(loading) return <><style>{CSS}</style><Loader msg="Loading Sui Dhaga…"/></>;
+  if(!role)   return <><style>{CSS}</style><PinScreen onSuccess={setRole}/></>;
+  if(!data)   return <><style>{CSS}</style><Loader msg="Loading data…"/></>;
 
   const PAGES={dash:Dashboard,orders:Orders,output:Output,ledger:Ledger,workers:WorkersPage};
   const Page=PAGES[tab];
@@ -539,7 +534,7 @@ function Ledger({data,update,addActivity,role}){
       nE=[...nE,{id:uid(),type:cfg.type,partyId:p.id,partyName:p.name,desc:"Opening balance",amount:+(pf.openingBal),direction:dir,date:pf.obDate||todayStr()}];
     }
     update({workers:nW,clients:nC,suppliers:nS,lenders:nL,ledgerEntries:nE});
-    addActivity(`Added ${cfg.label.slice(0,-1)}: ${pf.name}${pf.openingBal?" (opening: "+fmtCur(pf.openingBal)+")":""}`);
+    addActivity(`Added ${cfg.label.slice(0,-1)}: ${pf.name}${pf.openingBal?` (opening: ${fmtCur(pf.openingBal)})`:"" }`);
     setAModal(false);setPf({});
   };
   return(<>
@@ -584,11 +579,9 @@ function Ledger({data,update,addActivity,role}){
       <div className="field"><label className="lbl">Phone (optional)</label><input className="inp" type="tel" placeholder="9800000000" value={pf.phone||""} onChange={e=>setPf(f=>({...f,phone:e.target.value}))}/></div>
       {lTab==="workers"&&<><div className="field"><label className="lbl">Role</label><select className="inp" value={pf.role||"Tailor"} onChange={e=>setPf(f=>({...f,role:e.target.value}))}>{ALL_ROLES.map(r=><option key={r} value={r}>{r}</option>)}</select></div><div className="field"><label className="lbl">Rate/piece (₹)</label><input className="inp" type="number" placeholder="0" value={pf.rate||""} onChange={e=>setPf(f=>({...f,rate:e.target.value}))}/></div></>}
       <div className="field" style={{borderTop:"1.5px dashed #DDE3EF",paddingTop:12,marginTop:4}}>
-        <label className="lbl" style={{color:"#C8962A"}}>Opening Balance (optional)</label>
+        <label className="lbl" style={{color:C.gold}}>Opening Balance (optional)</label>
         <input className="inp" type="number" placeholder="Enter if they already have a balance" value={pf.openingBal||""} onChange={e=>setPf(f=>({...f,openingBal:e.target.value}))}/>
-        {pf.openingBal&&+pf.openingBal>0&&<div style={{fontSize:12,color:"#6B7A99",marginTop:5}}>
-          {lTab==="clients"?"Means client already owes you this amount":lTab==="loans"?"Means this loan was already received":"Means you already owe them this amount"}
-        </div>}
+        {pf.openingBal&&+pf.openingBal>0&&<div style={{fontSize:12,color:C.muted,marginTop:5}}>{lTab==="clients"?"Client already owes you this amount":lTab==="loans"?"This loan was already received":"You already owe them this amount"}</div>}
       </div>
       {pf.openingBal&&+pf.openingBal>0&&<div className="field"><label className="lbl">Opening Balance Date</label><input className="inp" type="date" value={pf.obDate||todayStr()} onChange={e=>setPf(f=>({...f,obDate:e.target.value}))}/></div>}
       <div style={{display:"flex",gap:8,marginTop:4}}><button className="btn btn-sm btn-ghost" style={{flex:1}} onClick={()=>setAModal(false)}>Cancel</button><button className="btn btn-sm btn-navy" style={{flex:2}} onClick={saveP}>Add {cfg.label.slice(0,-1)}</button></div>
