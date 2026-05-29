@@ -11,30 +11,33 @@ const db = {
       const res = await fetch(`${SUPABASE_URL}/rest/v1/appdata?id=eq.${ROW_ID}&select=value`, {
         headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
       });
+      if (!res.ok) { console.error("Supabase read error:", res.status, await res.text()); return null; }
       const rows = await res.json();
       if (rows && rows.length > 0 && rows[0].value) return JSON.parse(rows[0].value);
       return null;
-    } catch(e) { return null; }
+    } catch(e) { console.error("Supabase read exception:", e); return null; }
   },
   async write(data) {
     try {
       const body = JSON.stringify({ id: ROW_ID, value: JSON.stringify(data) });
-      // Try update first
-      const upd = await fetch(`${SUPABASE_URL}/rest/v1/appdata?id=eq.${ROW_ID}`, {
-        method: "PATCH",
-        headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+      // Try upsert — insert or update in one call
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/appdata`, {
+        method: "POST",
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          "Content-Type": "application/json",
+          Prefer: "resolution=merge-duplicates,return=minimal"
+        },
         body
       });
-      if (upd.status === 404 || upd.status === 406) {
-        // Row doesn't exist yet — insert
-        await fetch(`${SUPABASE_URL}/rest/v1/appdata`, {
-          method: "POST",
-          headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body
-        });
+      if (!res.ok) {
+        const txt = await res.text();
+        console.error("Supabase write error:", res.status, txt);
+        return false;
       }
       return true;
-    } catch(e) { return false; }
+    } catch(e) { console.error("Supabase write exception:", e); return false; }
   },
   async verifyPin(pin) {
     // Pins stored in DB config row id=2
